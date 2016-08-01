@@ -53,6 +53,7 @@ int main(int argc, char *argv[])
   int    MMAX, MTOP;
   char **MASK;
   char  *ONAME;
+  int KMERHISTTHRES = -1;
 
   { int    i, j, k;         //  Process options
     int    flags[128];
@@ -125,6 +126,9 @@ int main(int argc, char *argv[])
             break;
           case 'M':
             ARG_NON_NEGATIVE(MINT,"Memory allocation (in Gb)")
+            break;
+          case 'G':
+            ARG_POSITIVE(KMERHISTTHRES,"Kmer histogram threshold")
             break;
           case 'T':
             ARG_POSITIVE(NTHREADS,"Number of threads")
@@ -354,6 +358,8 @@ int main(int argc, char *argv[])
             fprintf(out," -C");
           if (NON)
             fprintf(out," -N");
+          if (KMERHISTTHRES > 0)
+            fprintf(out," -G%d",KMERHISTTHRES);
           if (KINT != 20)
             fprintf(out," -k%d",KINT);
           if (TINT > 0)
