@@ -128,7 +128,9 @@ static uint64 Kmask;          //  4^Kmer-1
 static int    TooFrequent;    //  (Suppress != 0) ? Suppress : INT32_MAX
 
 static int    NTHREADS;       //  Adjusted downward to nearest power of 2
+#if ! defined(USE_PRS)
 static int    NSHIFT;         //  NTHREADS = 1 << NSHIFT
+#endif
 
 int Set_Filter_Params(int kmer, int suppress, int nthreads)
 { if (kmer <= 1)
@@ -148,12 +150,16 @@ int Set_Filter_Params(int kmer, int suppress, int nthreads)
   else
     TooFrequent = Suppress;
 
+#if ! defined(USE_PRS)
   NTHREADS = 1;
   NSHIFT   = 0;
   while (2*NTHREADS <= nthreads)
     { NTHREADS *= 2;
       NSHIFT   += 1;
     }
+#else
+  NTHREADS = nthreads;
+#endif
 
   return (0);
 }
