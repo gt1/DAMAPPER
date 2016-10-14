@@ -23,6 +23,7 @@ extern double BEST_TIE;
 extern uint64 MEM_LIMIT;
 extern uint64 MEM_PHYSICAL;
 
+void Set_MaxGram(int const rmaxgram);
 int Set_Filter_Params(int kmer, int suppress, int nthreads); 
 
 void *Sort_Kmers(HITS_DB *block, int *len);

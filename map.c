@@ -27,12 +27,17 @@
 #include "align.h"
 #include "map.h"
 
+#if defined(USE_PRS)
+#include "prs_uint64_t_pair.h"
+#endif
+
 #define THREAD    pthread_t
 
 #define MAX_BIAS  2    //  In -b mode, don't consider tuples with specificity
                        //     <= 4 ^ -(kmer-MAX_BIAS)
 
-#define MAXGRAM 10000  //  Cap on k-mer count histogram (in count_thread, merge_thread)
+static int MAXGRAM = 10000;
+// #define MAXGRAM 10000  //  Cap on k-mer count histogram (in count_thread, merge_thread)
 
 #define BINWIDTH  64   //  minimum width of a diagonal bucket
 #define HITMIN    3    //  minimum # of k-mers in a potential seed
@@ -123,7 +128,9 @@ static uint64 Kmask;          //  4^Kmer-1
 static int    TooFrequent;    //  (Suppress != 0) ? Suppress : INT32_MAX
 
 static int    NTHREADS;       //  Adjusted downward to nearest power of 2
+#if ! defined(USE_PRS)
 static int    NSHIFT;         //  NTHREADS = 1 << NSHIFT
+#endif
 
 int Set_Filter_Params(int kmer, int suppress, int nthreads)
 { if (kmer <= 1)
@@ -143,14 +150,23 @@ int Set_Filter_Params(int kmer, int suppress, int nthreads)
   else
     TooFrequent = Suppress;
 
+#if ! defined(USE_PRS)
   NTHREADS = 1;
   NSHIFT   = 0;
   while (2*NTHREADS <= nthreads)
     { NTHREADS *= 2;
       NSHIFT   += 1;
     }
+#else
+  NTHREADS = nthreads;
+#endif
 
   return (0);
+}
+
+void Set_MaxGram(int const rmaxgram)
+{
+  MAXGRAM = rmaxgram;
 }
 
 
@@ -165,6 +181,7 @@ int Set_Filter_Params(int kmer, int suppress, int nthreads)
 #define BPOWR   256             //  = 2^BSHIFT
 #define BMASK  0xffllu          //  = BPOWR-1
 
+#if ! defined(USE_PRS)
 static uint32  NMASK;           //  = NTHREADS-1
 static uint64  QMASK;           //  = BMASK << NSHIFT
 static int     LEX_shift;
@@ -173,6 +190,7 @@ static int     LEX_last;
 static int     LEX_next;
 static Double *LEX_src;
 static Double *LEX_trg;
+#endif
 
 typedef struct
   { int64  beg;
@@ -182,6 +200,7 @@ typedef struct
     uint64 table[BPOWR];
   } Lex_Arg;
 
+#if ! defined(USE_PRS)
 static void *lex_thread(void *arg)
 { Lex_Arg    *data  = (Lex_Arg *) arg;
   int64      *sptr  = data->sptr;
@@ -308,8 +327,8 @@ static void *lex_thread(void *arg)
 }
 
 static Double *lex_sort(int bytes[16], Double *src, Double *trg, Lex_Arg *parmx)
-{ THREAD  threads[NTHREADS];
-  int64   zthresh[NTHREADS];
+{ THREAD  * threads = alloca(NTHREADS*sizeof(THREAD));
+  int64 * zthresh = alloca(NTHREADS*sizeof(int64));
 
   int64   len, x, y;
   Double *xch;
@@ -393,29 +412,29 @@ static Double *lex_sort(int bytes[16], Double *src, Double *trg, Lex_Arg *parmx)
       LEX_trg = xch;
 
 #ifdef TEST_LSORT
-      printf("\nLSORT %d\n",LEX_shift);
+      fprintf(stderr,"\nLSORT %d\n",LEX_shift);
       if (LEX_shift >= 64)
         { x = (1llu << ((LEX_shift-64)+BSHIFT))-1;
           for (i = 0; i < len; i++)
             if (i > 0 && (LEX_src[i].p1 < LEX_src[i].p1 ||
                                (LEX_src[i].p1 == LEX_src[i].p1 && 
                                (LEX_src[i].p2 & x) < (LEX_src[i-1].p2 & x))))
-              { printf("%6d: %8llx %8llx %8llx %8llx : %4llx",
+              { fprintf(stderr,"%6d: %8llx %8llx %8llx %8llx : %4llx",
                        i,LEX_src[i].p2>>32,(LEX_src[i].p2)&0xffffffffll,LEX_src[i].p1>>32,
                        LEX_src[i].p1&0xffffffffll,LEX_src[i].p2&x);
-                printf(" OO");
-                printf("\n");
+                fprintf(stderr," OO");
+                fprintf(stderr,"\n");
               }
         }
       else
         { x = (1llu << (LEX_shift+BSHIFT))-1;
           for (i = 0; i < len; i++)
             if (i > 0 && (LEX_src[i].p1 & x) < (LEX_src[i-1].p1 & x))
-              { printf("%6d: %8llx %8llx %8llx %8llx : %4llx",
+              { fprintf(stderr,"%6d: %8llx %8llx %8llx %8llx : %4llx",
                        i,LEX_src[i].p2>>32,(LEX_src[i].p2)&0xffffffffll,LEX_src[i].p1>>32,
                        LEX_src[i].p1&0xffffffffll,LEX_src[i].p1&x);
-                printf(" OO");
-                printf("\n");
+                fprintf(stderr," OO");
+                fprintf(stderr,"\n");
               }
         }
 #endif
@@ -423,6 +442,7 @@ static Double *lex_sort(int bytes[16], Double *src, Double *trg, Lex_Arg *parmx)
 
   return (LEX_src);
 }
+#endif
 
 
 /*******************************************************************************************
@@ -789,10 +809,10 @@ static int find_read(int x, HITS_READ *a, int n)
 }
 
 void *Sort_Kmers(HITS_DB *block, int *len)
-{ THREAD    threads[NTHREADS];
-  Tuple_Arg parmt[NTHREADS];
-  Comp_Arg  parmf[NTHREADS];
-  Lex_Arg   parmx[NTHREADS];
+{ THREAD    * threads = alloca(NTHREADS*sizeof(THREAD));
+  Tuple_Arg * parmt = alloca(NTHREADS*sizeof(Tuple_Arg));
+  Comp_Arg  * parmf = alloca(NTHREADS*sizeof(Comp_Arg));
+  Lex_Arg   * parmx = alloca(NTHREADS*sizeof(Lex_Arg));
   int       mersort[16];
 
   KmerPos  *src, *trg, *rez;
@@ -842,10 +862,10 @@ void *Sort_Kmers(HITS_DB *block, int *len)
     exit (1);
 
   if (VERBOSE)
-    { printf("\n   Kmer count = ");
-      Print_Number((int64) kmers,0,stdout);
-      printf("\n   Using %.2fGb of space\n",(1. * kmers) / 33554432);
-      fflush(stdout);
+    { fprintf(stderr,"\n   Kmer count = ");
+      Print_Number((int64) kmers,0,stderr);
+      fprintf(stderr,"\n   Using %.2fGb of space\n",(1. * kmers) / 33554432);
+      fflush(stderr);
     }
 
   TA_block = block;
@@ -859,7 +879,7 @@ void *Sort_Kmers(HITS_DB *block, int *len)
         parmt[i].kptr[j] = 0;
       parmt[i].tbeg = parmx[i].beg = x;
       parmt[i].rbeg = z;
-      parmt[i].tend = parmx[i].end = x = (((int64) kmers)*(i+1) >> NSHIFT);
+      parmt[i].tend = parmx[i].end = x = (((int64) kmers)*(i+1) / NTHREADS);
       parmt[i].rend = z = find_read(x,block->reads,nreads);
     }
 
@@ -873,7 +893,23 @@ void *Sort_Kmers(HITS_DB *block, int *len)
   for (i = 0; i < NTHREADS; i++)
     pthread_join(threads[i],NULL);
 
+  #if defined(USE_PRS)
+  if (
+    radixsort_densekey_uint64_t_pair(
+      (uint64_t_pair **)&rez,
+      (uint64_t_pair *)src,
+      (uint64_t_pair *)trg,
+      kmers /* n */,
+      NTHREADS,
+      sizeof(mersort)/sizeof(mersort[0]),
+      &mersort[0],
+      1 /* interleave */
+    ) != 0
+  )
+    exit(1);
+  #else
   rez = (KmerPos *) lex_sort(mersort,(Double *) src,(Double *) trg,parmx);
+  #endif
 
   if (BIASED || TA_track != NULL)
     for (i = 0; i < NTHREADS; i++)
@@ -882,7 +918,7 @@ void *Sort_Kmers(HITS_DB *block, int *len)
   if (TooFrequent < INT32_MAX && kmers > 0)
     { parmf[0].beg = 0;
       for (i = 1; i < NTHREADS; i++)
-        { x = (((int64) i)*kmers) >> NSHIFT;
+        { x = (((int64) i)*kmers) / NTHREADS;
           h = rez[x-1].code;
           while (rez[x].code == h)
             x += 1;
@@ -936,23 +972,23 @@ void *Sort_Kmers(HITS_DB *block, int *len)
 #ifdef TEST_KSORT
   { int i;
 
-    printf("\nKMER SORT:\n");
+    fprintf(stderr,"\nKMER SORT:\n");
     for (i = 0; i < HOW_MANY && i < kmers; i++)
       { KmerPos *c = rez+i;
-        printf(" %5d / %5d / %10lld\n",c->read,c->rpos,c->code);
+        fprintf(stderr," %5d / %5d / %10lld\n",c->read,c->rpos,c->code);
       }
-    fflush(stdout);
+    fflush(stderr);
   }
 #endif
 
   if (VERBOSE)
     { if (TooFrequent < INT32_MAX || BIASED || TA_track != NULL)
-        { printf("   Revised kmer count = ");
-          Print_Number((int64) kmers,0,stdout);
-          printf("\n");
+        { fprintf(stderr,"   Revised kmer count = ");
+          Print_Number((int64) kmers,0,stderr);
+          fprintf(stderr,"\n");
         }
-      printf("   Index occupies %.2fGb\n",(1. * kmers) / 67108864);
-      fflush(stdout);
+      fprintf(stderr,"   Index occupies %.2fGb\n",(1. * kmers) / 67108864);
+      fflush(stderr);
     }
 
   if (kmers <= 0)
@@ -1031,7 +1067,7 @@ typedef struct
     int64 *kptr;
     int64  nhits;
     int    limit;
-    int64  hitgram[MAXGRAM];
+    int64  * hitgram;
   } Merge_Arg;
 
 static void *count_thread(void *arg)
@@ -1386,7 +1422,7 @@ static Splay *linearize(Splay *h, Splay *e)
 void print_tree(Splay *ref, Splay *h, int lev)
 { if (h == NULL) return;
   print_tree(ref,h->rgt,lev+2);
-  printf("  %*s %4ld: %4ld < %8d(%5d,%8d) [%8d,%8d] > %4ld (->%4ld @%4ld)\n",
+  fprintf(stderr,"  %*s %4ld: %4ld < %8d(%5d,%8d) [%8d,%8d] > %4ld (->%4ld @%4ld)\n",
          lev,"",h-ref,(h->lft==NULL)?-1:h->lft-ref,h->diag,h->apos,h->bpos,h->bmin,h->bmax,
                       (h->rgt==NULL)?-1:h->rgt-ref,(h->from==NULL)?-1:h->from-ref,
                       (h->orig==NULL)?-1:h->orig-ref);
@@ -1488,13 +1524,13 @@ Splay *print_list(Splay *h, int hithr, Splay *orig)
       double aspect, density;
 
       if (h->from == NULL)
-        { printf("  %4d: (%5d,%5d)  (%8d,%8d) %8d",h->cost,h->apos,h->apos,
+        { fprintf(stderr,"  %4d: (%5d,%5d)  (%8d,%8d) %8d",h->cost,h->apos,h->apos,
                                                            h->bpos,h->bpos,h->diag);
           aspect = 1.;
           density = 1.;
         }
       else
-        { printf("  %4d: (%5d,%5d)  (%8d,%8d) %8d",h->cost,h->orig->apos,h->apos,
+        { fprintf(stderr,"  %4d: (%5d,%5d)  (%8d,%8d) %8d",h->cost,h->orig->apos,h->apos,
                                                          h->orig->bpos,h->bpos,h->diag);
           da = h->apos - h->orig->apos;
           db = h->bpos - h->orig->bpos;
@@ -1504,17 +1540,17 @@ Splay *print_list(Splay *h, int hithr, Splay *orig)
           else
             density = h->cost / (1. * db);
         }
-      printf(" <%8d,%8d>",h->bmin,h->bmax);
-      printf("  %6.1f  %6.3f",aspect,density);
+      fprintf(stderr," <%8d,%8d>",h->bmin,h->bmax);
+      fprintf(stderr,"  %6.1f  %6.3f",aspect,density);
       if (h->from != NULL)
         { if (h->orig->orig == h)
-            printf(" **");
+            fprintf(stderr," **");
         }
       else
         { if (h->orig == h)
-            printf(" aa");
+            fprintf(stderr," aa");
         }
-      printf("\n");
+      fprintf(stderr,"\n");
       orig = h->orig;
     }
 
@@ -1555,7 +1591,7 @@ typedef struct
 void print_candidates(int aread, int cand, Candidate *cbase, Jump *jbase, int showJ)
 { int d;
 
-  printf("Read %5d\n",aread);
+  fprintf(stderr,"Read %5d\n",aread);
   for (d = cand; d >= 0; d = cbase[d].next)
     { int     da, db;
       double  aspect, density;
@@ -1568,11 +1604,11 @@ void print_candidates(int aread, int cand, Candidate *cbase, Jump *jbase, int sh
       else
         density = cbase[d].score / (1. * db);
 
-      printf("    %5d = %5d%c [%5d,%5d] vs [%8d,%8d]  |%4d|  %6.1f  %6.3f\n",
+      fprintf(stderr,"    %5d = %5d%c [%5d,%5d] vs [%8d,%8d]  |%4d|  %6.1f  %6.3f\n",
              cbase[d].score,cbase[d].bread,(cbase[d].comp?'c':'n'),
              cbase[d].afirst,cbase[d].alast,
              cbase[d].bfirst,cbase[d].blast,cbase[d].length,aspect,density);
-      fflush(stdout);
+      fflush(stderr);
 
       if (showJ)
         { int   j;
@@ -1582,15 +1618,15 @@ void print_candidates(int aread, int cand, Candidate *cbase, Jump *jbase, int sh
           for (j = cbase[d].chain; j >= 0; j = jbase[j].next)
             { if (m < 5)
                 for (n = 0; n < m; n++)
-                  printf("   (%4d,%4d)\n",jbase[j].adisp[n],jbase[j].bdisp[n]);
+                  fprintf(stderr,"   (%4d,%4d)\n",jbase[j].adisp[n],jbase[j].bdisp[n]);
               else
                 for (n = 0; n < 5; n++)
-                  printf("   (%4d,%4d)\n",jbase[j].adisp[n],jbase[j].bdisp[n]);
+                  fprintf(stderr,"   (%4d,%4d)\n",jbase[j].adisp[n],jbase[j].bdisp[n]);
               m -= 5;
             }
         }
 
-      fflush(stdout);
+      fflush(stderr);
     }
 }
 
@@ -1793,7 +1829,7 @@ static void *chain_thread(void *arg)
               //  For each significant K-mer chain do:
 
 #ifdef TEST_CANDID
-              printf("Read %d vs Contig %d\n",ar+astart,br+bstart); fflush(stdout);
+              fprintf(stderr,"Read %d vs Contig %d\n",ar+astart,br+bstart); fflush(stderr);
 #endif
               for (h = chain; h != NULL; h = h->rgt)
                 if (h->cost >= hithr && h->orig->orig == h)
@@ -1805,7 +1841,7 @@ static void *chain_thread(void *arg)
                     ae = h->apos;
                     be = h->bpos;
 #ifdef TEST_CANDID
-                    printf("  %5d: (%5d,%5d)  (%8d,%8d)\n",h->cost,ab,ae,bb,be); fflush(stdout);
+                    fprintf(stderr,"  %5d: (%5d,%5d)  (%8d,%8d)\n",h->cost,ab,ae,bb,be); fflush(stderr);
 #endif
 
                     if (PROFILE)
@@ -2037,13 +2073,13 @@ static void *chain_thread(void *arg)
       if (PROFILE)
         { int i, c, n;
 
-          printf(" Profile: %ld\n",cnt-cover);
+          fprintf(stderr," Profile: %ld\n",cnt-cover);
           n = (aread[ar].rlen-1) / SPACING + 1;
           c = 0;
           for (i = 0; i <= n; i++)
             if (cnt[i] != 0)
               { c += cnt[i];
-                printf(" %5d: %3d\n",i*SPACING,c);
+                fprintf(stderr," %5d: %3d\n",i*SPACING,c);
               }
         }
 #endif
@@ -2124,7 +2160,7 @@ static int Entwine(Path *jpath, Path *kpath, Trace_Buffer *tbuf, int *where)
   den   = 0;
 
 #ifdef SEE_ENTWINE
-  printf("\n");
+  fprintf(stderr,"\n");
 #endif
 
   y2 = jpath->bbpos;
@@ -2172,7 +2208,7 @@ static int Entwine(Path *jpath, Path *kpath, Trace_Buffer *tbuf, int *where)
       k += 2;
 
 #ifdef SEE_ENTWINE
-      printf("   @ %5d : %5d %5d = %4d\n",ac,y2,b2,abs(b2-y2));
+      fprintf(stderr,"   @ %5d : %5d %5d = %4d\n",ac,y2,b2,abs(b2-y2));
 #endif
 
       i = abs(y2-b2);
@@ -2203,9 +2239,9 @@ static int Entwine(Path *jpath, Path *kpath, Trace_Buffer *tbuf, int *where)
 
 #ifdef SEE_ENTWINE
   if (den == 0)
-    printf("Nothing\n");
+    fprintf(stderr,"Nothing\n");
   else
-    printf("MINIM = %d AVERAGE = %d  IFLARE = %d  OFLARE = %d\n",min,num/den,iflare,oflare);
+    fprintf(stderr,"MINIM = %d AVERAGE = %d  IFLARE = %d  OFLARE = %d\n",min,num/den,iflare,oflare);
 #endif
 
   if (den == 0)
@@ -2281,7 +2317,7 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
 
 #ifdef TEST_CONTAIN
   for (j = 0; j < novls; j++)
-    printf("  %3d: [%5d,%5d] x [%5d,%5d]\n",j,amatch[j].path.abpos,amatch[j].path.aepos,
+    fprintf(stderr,"  %3d: [%5d,%5d] x [%5d,%5d]\n",j,amatch[j].path.abpos,amatch[j].path.aepos,
                                               amatch[j].path.bbpos,amatch[j].path.bepos);
 #endif
 
@@ -2312,7 +2348,7 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
                                   Fusion(kmath,bwhen,jmath,tbuf);
                                   *jmath = *kmath;
 #ifdef TEST_CONTAIN
-                                  printf("  Really 1");
+                                  fprintf(stderr,"  Really 1");
 #endif
                                 }
                               else
@@ -2322,21 +2358,21 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
                                   Fusion(jpath,awhen,kpath,tbuf);
                                   Fusion(jmath,bwhen,kmath,tbuf);
 #ifdef TEST_CONTAIN
-                                  printf("  Really 2");
+                                  fprintf(stderr,"  Really 2");
 #endif
                                 }
                             }
                           else
                             { Fusion(jpath,awhen,kpath,tbuf);
 #ifdef TEST_CONTAIN
-                              printf("  Really 3");
+                              fprintf(stderr,"  Really 3");
 #endif
                             }
                           k = j;
                         }
                       kpath->abpos = -1;
 #ifdef TEST_CONTAIN
-                      printf("  Fuse! A %d %d\n",j,k);
+                      fprintf(stderr,"  Fuse! A %d %d\n",j,k);
 #endif
                       break;
                     }
@@ -2365,7 +2401,7 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
                                   *jpath = *kpath;
                                   Fusion(jmath,bwhen,kmath,tbuf);
 #ifdef TEST_CONTAIN
-                                  printf("  Really 4");
+                                  fprintf(stderr,"  Really 4");
 #endif
                                 }
                               else
@@ -2377,7 +2413,7 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
                                   Fusion(kmath,bwhen,jmath,tbuf);
                                   *jmath = *kmath;
 #ifdef TEST_CONTAIN
-                                  printf("  Really 5");
+                                  fprintf(stderr,"  Really 5");
 #endif
                                 }
                             }
@@ -2385,7 +2421,7 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
                             { Fusion(kpath,awhen,jpath,tbuf);
                               *jpath = *kpath;
 #ifdef TEST_CONTAIN
-                              printf("  Really 6");
+                              fprintf(stderr,"  Really 6");
 #endif
                             }
                           k = j;
@@ -2397,7 +2433,7 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
                         }
                       kpath->abpos = -1;
 #ifdef TEST_CONTAIN
-                      printf("  Fuse! B %d %d\n",j,k);
+                      fprintf(stderr,"  Fuse! B %d %d\n",j,k);
 #endif
                       break;
                     }
@@ -2417,7 +2453,7 @@ static int Handle_Redundancies(Overlap *amatch, int novls,
 
 #ifdef TEST_CONTAIN
   for (j = 0; j < novls; j++)
-    printf("  %3d: [%5d,%5d] x [%5d,%5d]\n",j,amatch[j].path.abpos,amatch[j].path.aepos,
+    fprintf(stderr,"  %3d: [%5d,%5d] x [%5d,%5d]\n",j,amatch[j].path.abpos,amatch[j].path.aepos,
                                               amatch[j].path.bbpos,amatch[j].path.bepos);
 #endif
 
@@ -2612,17 +2648,17 @@ static void *report_thread(void *arg)
       tbuf->top = 0;
 
 #if defined(TEST_ALIGN) || defined(TEST_CONTAIN) || defined(TEST_SELECT)
-      printf("\nRead %d:\n",ar+astart);
+      fprintf(stderr,"\nRead %d:\n",ar+astart);
 #endif
       for (c = aread[ar].coff; c >= 0; c = d)
         { br = cbase[c].bread;
           cm = cbase[c].comp;
 
 #ifdef TEST_ALIGN
-          printf("    %5d = %5d%c [%5d,%5d] vs [%8d,%8d]  |%4d|\n",
+          fprintf(stderr,"    %5d = %5d%c [%5d,%5d] vs [%8d,%8d]  |%4d|\n",
                  cbase[c].score,br,(cm?'c':'n'),cbase[c].afirst,cbase[c].alast,
                  cbase[c].bfirst,cbase[c].blast,cbase[c].length);
-          fflush(stdout);
+          fflush(stderr);
 #endif
 
           align->bseq = bseq + bread[br].boff;
@@ -2672,12 +2708,12 @@ static void *report_thread(void *arg)
                         { alast  = apath->abpos;
 #ifdef TEST_ALIGN
                           if (cm)
-                            printf("      Overlap %5dc",br);
+                            fprintf(stderr,"      Overlap %5dc",br);
                           else
-                            printf("      Overlap %5dn",br);
-                          printf(" [%5d,%5d] x [%5d,%5d] = %4d",
+                            fprintf(stderr,"      Overlap %5dn",br);
+                          fprintf(stderr," [%5d,%5d] x [%5d,%5d] = %4d",
                                  apath->abpos,apath->aepos,apath->bbpos,apath->bepos,apath->diffs);
-                          printf(" >> %d <<\n",alast);
+                          fprintf(stderr," >> %d <<\n",alast);
 #endif
 
                           if (novl >= Omax)
@@ -2740,7 +2776,7 @@ static void *report_thread(void *arg)
             {
 #ifdef TEST_CONTAIN
               if (novl > 1)
-                printf("\n%5d vs %5d:\n",ar+astart,br);
+                fprintf(stderr,"\n%5d vs %5d:\n",ar+astart,br);
 #endif
 
               //  Remove redundant alignment and fuse entwined alignments
@@ -2777,11 +2813,11 @@ static void *report_thread(void *arg)
 
 #ifdef TEST_SELECT
       for (c = 0; c < novl; c++)
-        printf("  %3d: vs %5d [%5d,%5d] x [%5d,%5d] %.1f\n",c,amatch[c].bread,
+        fprintf(stderr,"  %3d: vs %5d [%5d,%5d] x [%5d,%5d] %.1f\n",c,amatch[c].bread,
                amatch[c].path.abpos,amatch[c].path.aepos,amatch[c].path.bbpos,amatch[c].path.bepos,
                (100.*amatch[c].path.diffs)/(amatch[c].path.aepos - amatch[c].path.abpos));
-      printf("\n");
-      fflush(stdout);
+      fprintf(stderr,"\n");
+      fflush(stderr);
 #endif
 
       lovl = 0;
@@ -2934,21 +2970,21 @@ static void *report_thread(void *arg)
                   }
 #ifdef TEST_SELECT
                 if (p == b)
-                  printf("  %5d : %5d ",amatch[p].bread,linker[p].score);
+                  fprintf(stderr,"  %5d : %5d ",amatch[p].bread,linker[p].score);
                 else
-                  printf(" -> ");
-                printf("[%5d,%5d] %5d %.1f",
+                  fprintf(stderr," -> ");
+                fprintf(stderr,"[%5d,%5d] %5d %.1f",
                        amatch[p].path.abpos,amatch[p].path.aepos,
                        (amatch[p].path.aepos-amatch[p].path.abpos),
                        (100.*amatch[p].path.diffs)/(amatch[p].path.aepos-amatch[p].path.abpos));
-                fflush(stdout);
+                fflush(stderr);
 #endif
                 if (p == e)
                   break;
               }
 #ifdef TEST_SELECT
-            printf("\n");
-            fflush(stdout);
+            fprintf(stderr,"\n");
+            fflush(stderr);
 #endif
             if (MR_doB && COMP(bmatch[b].flags))
               { e = b;
@@ -2974,19 +3010,19 @@ static void *report_thread(void *arg)
 
 #ifdef TEST_SELECT
       for (d = 0; d < nparts; d++)
-        printf("  %2d: [%5d,%5d] %d\n",d,part[d].beg,part[d].end,part[d].top);
+        fprintf(stderr,"  %2d: [%5d,%5d] %d\n",d,part[d].beg,part[d].end,part[d].top);
       if (PROFILE)
         { int i, c;
 
-          printf(" Profile: %ld\n",cnt-data->cover);
+          fprintf(stderr," Profile: %ld\n",cnt-data->cover);
           c = 0;
           for (i = 0; i <= atck; i++)
             if (cnt[i] != 0)
               { c += cnt[i];
-                printf(" %5d: %3d\n",i*SPACING,c);
+                fprintf(stderr," %5d: %3d\n",i*SPACING,c);
               }
         }
-      fflush(stdout);
+      fflush(stderr);
 #endif
 
       if (PROFILE)
@@ -3046,10 +3082,11 @@ static int         firstime = 1;
 void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
                   void *vasort, int alen, void *vbsort, int blen, int comp, int start)
 
-{ THREAD     threads[NTHREADS];
-  Merge_Arg  parmm[NTHREADS];
-  Lex_Arg    parmx[NTHREADS];
-  int        pairsort[16];
+{ THREAD     * threads = alloca(NTHREADS*sizeof(THREAD));
+  Merge_Arg  * parmm = (Merge_Arg *)Malloc(NTHREADS*sizeof(Merge_Arg),"Allocating parmm");
+  Lex_Arg    * parmx = alloca(NTHREADS*sizeof(Lex_Arg));
+  int64      * histo = (int64*)Malloc(MAXGRAM * sizeof(int64),"Allocating histo");
+  int          pairsort[16];
 
   SeedPair *khit, *hhit;
   SeedPair *work1, *work2;
@@ -3058,6 +3095,17 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
 
   KmerPos  *asort, *bsort;
   int64     atot, btot;
+
+  {
+    int i;
+    for (i = 0; i < NTHREADS; ++i )
+      parmm[i].hitgram = NULL;
+    for (i = 0; i < NTHREADS; ++i )
+    {
+      parmx[i].sptr = alloca(NTHREADS*BPOWR*sizeof(int64));
+      parmm[i].hitgram = Malloc(MAXGRAM*sizeof(int64),"Allocating parmm[].hitgram");
+    }
+  }
 
   asort = (KmerPos *) vasort;
   bsort = (KmerPos *) vbsort;
@@ -3122,7 +3170,7 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
 
     parmm[0].abeg = parmm[0].bbeg = 0;
     for (i = 1; i < NTHREADS; i++)
-      { p = (int) ((((int64) alen) * i) >> NSHIFT);
+      { p = (int) ((((int64) alen) * i) / NTHREADS);
         if (p > 0)
           { c = asort[p-1].code;
             while (asort[p].code == c)
@@ -3145,10 +3193,9 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
       pthread_join(threads[i],NULL);
 
     if (VERBOSE)
-      printf("\n");
+      fprintf(stderr,"\n");
     if (MEM_LIMIT > 0)
-      { int64 histo[MAXGRAM];
-        int64 tom, avail;
+      { int64 tom, avail;
 
         for (j = 0; j < MAXGRAM; j++)
           histo[j] = parmm[0].hitgram[j];
@@ -3195,9 +3242,9 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
             fflush(stderr);
           }
         if (VERBOSE)
-          { printf("   Capping mutual k-mer matches over %d (effectively -t%d)\n",
+          { fprintf(stderr,"   Capping mutual k-mer matches over %d (effectively -t%d)\n",
                    limit,(int) sqrt(1.*limit));
-            fflush(stdout);
+            fflush(stderr);
           }
 
         for (i = 0; i < NTHREADS; i++)
@@ -3216,15 +3263,15 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
       parmm[i].nhits = nhits += parmm[i].nhits;
 
     if (VERBOSE)
-      { printf("   Hit count = ");
-        Print_Number(nhits,0,stdout);
+      { fprintf(stderr,"   Hit count = ");
+        Print_Number(nhits,0,stderr);
         if (nhits >= blen)
-          printf("\n   Highwater of %.2fGb space\n",
+          fprintf(stderr,"\n   Highwater of %.2fGb space\n",
                        (1. * (alen + 2*nhits)) / 67108864);
         else
-          printf("\n   Highwater of %.2fGb space\n",
+          fprintf(stderr,"\n   Highwater of %.2fGb space\n",
                        (1. * (alen + blen + nhits)) / 67108864);
-        fflush(stdout);
+        fflush(stderr);
       }
 
     if (nhits == 0)
@@ -3259,10 +3306,10 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
       pthread_join(threads[i],NULL);
 
 #ifdef TEST_PAIRS
-    printf("\nSETUP SORT:\n");
+    fprintf(stderr,"\nSETUP SORT:\n");
     for (i = 0; i < HOW_MANY && i < nhits; i++)
       { SeedPair *c = khit+i;
-        printf(" %5d / %5d / %5d /%5d\n",c->aread,c->bread,c->apos,c->apos-c->diag);
+        fprintf(stderr," %5d / %5d / %5d /%5d\n",c->aread,c->bread,c->apos,c->apos-c->diag);
       }
 #endif
   }
@@ -3278,7 +3325,21 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
     parmx[NTHREADS-1].beg = x;
     parmx[NTHREADS-1].end = nhits;
 
+    #if defined(USE_PRS)
+    if ( radixsort_densekey_uint64_t_pair(
+      (uint64_t_pair **)&khit,
+      (uint64_t_pair *)khit,
+      (uint64_t_pair *)hhit,
+      nhits /* n */,
+      NTHREADS,
+      sizeof(pairsort)/sizeof(pairsort[0]),
+      &pairsort[0],
+      1 /* interleave */
+    ) != 0 )
+      exit(1);
+    #else
     khit = (SeedPair *) lex_sort(pairsort,(Double *) khit,(Double *) hhit,parmx);
+    #endif
 
     khit[nhits].aread = 0x7fffffff;
     khit[nhits].bread = 0x7fffffff;
@@ -3286,10 +3347,10 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
     khit[nhits].apos  = 0;
 
 #ifdef TEST_CSORT
-    printf("\nCROSS SORT %lld:\n",nhits);
+    fprintf(stderr,"\nCROSS SORT %lld:\n",nhits);
     for (i = 0; i < HOW_MANY && i <= nhits; i++)
       { SeedPair *c = khit+i;
-        printf(" %5d / %5d / %5d /%5d\n",c->aread,c->bread,c->apos,c->apos-c->diag);
+        fprintf(stderr," %5d / %5d / %5d /%5d\n",c->aread,c->bread,c->apos,c->apos-c->diag);
       }
 #endif
   }
@@ -3305,7 +3366,7 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
     parmr[0].hbeg = 0;
     parmr[0].abeg = 0;
     for (i = 1; i < NTHREADS; i++)
-      { a = (i * ablock->nreads) >> NSHIFT;
+      { a = (i * ablock->nreads) / NTHREADS;
         if (a > 0)
           p = find_aread(a,khit,nhits);
         else
@@ -3342,6 +3403,15 @@ void Match_Filter(HITS_DB *ablock, HITS_DB *bblock,
   free(work1);
 
 epilogue:
+  {
+    int i;
+    for (i = 0; i < NTHREADS; ++i )
+      free(parmm[i].hitgram);
+  }
+
+  free(parmm);
+  free(histo);
+
   if (VERBOSE)
     { int width;
 
@@ -3351,20 +3421,20 @@ epilogue:
         width = ((int) log10((double) nhits)) + 1;
       width += (width-1)/3;
 
-      printf("\n     ");
-      Print_Number(nhits,width,stdout);
-      printf(" %d-mers (%e of matrix)\n     ",Kmer,(1.*nhits/atot)/btot);
+      fprintf(stderr,"\n     ");
+      Print_Number(nhits,width,stderr);
+      fprintf(stderr," %d-mers (%e of matrix)\n     ",Kmer,(1.*nhits/atot)/btot);
       if (nfilt < 0)
-        { Print_Number(-nfilt,width,stdout);
-          printf(" candidates removed\n     ");;
+        { Print_Number(-nfilt,width,stderr);
+          fprintf(stderr," candidates removed\n     ");;
         }
       else
-        { Print_Number(nfilt,width,stdout);
-          printf(" candidates added\n     ");;
+        { Print_Number(nfilt,width,stderr);
+          fprintf(stderr," candidates added\n     ");;
         }
-      Print_Number(tfilt,width,stdout);
-      printf(" candidates (%e of matrix)\n",(1.*tfilt/atot)/btot);
-      fflush(stdout);
+      Print_Number(tfilt,width,stderr);
+      fprintf(stderr," candidates (%e of matrix)\n",(1.*tfilt/atot)/btot);
+      fflush(stderr);
     }
 }
 
@@ -3388,7 +3458,7 @@ void Reporter(char *aname, HITS_DB *ablock, char *bname, HITS_DB *bblock,
               Align_Spec *aspec, int mflag)
 {
 #ifndef NOTHREAD
-  THREAD threads[NTHREADS];
+  THREAD * threads = alloca(NTHREADS*sizeof(THREAD));
 #endif
   int   i;
   int   ncheck;
@@ -3447,12 +3517,12 @@ void Reporter(char *aname, HITS_DB *ablock, char *bname, HITS_DB *bblock,
     }
 
   if (VERBOSE)
-    { printf("      ");
-      Print_Number(ncheck,0,stdout);
-      printf(" mapped segments\n");
+    { fprintf(stderr,"      ");
+      Print_Number(ncheck,0,stderr);
+      fprintf(stderr," mapped segments\n");
     }
 
-  if ( ! PROFILE) return;
+  if ( ! PROFILE) goto cleanup;
    
   { int   i, a, size;
     int64 beg, cnt;
@@ -3476,4 +3546,9 @@ void Reporter(char *aname, HITS_DB *ablock, char *bname, HITS_DB *bblock,
       }
     fwrite(&cnt,sizeof(int64),1,afile);
   }
+
+  cleanup:
+  free(parmr);
+  parmr = NULL;
+  firstime = 1;
 }

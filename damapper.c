@@ -552,6 +552,7 @@ int main(int argc, char *argv[])
   int    NTHREADS;
   int    MMAX, MTOP, *MSTAT;
   char **MASK;
+  int KMERHISTTHRES = -1;
 
   { int    i, j, k;
     int    flags[128];
@@ -626,6 +627,9 @@ int main(int argc, char *argv[])
           case 't':
             ARG_POSITIVE(MAX_REPS,"Tuple supression frequency")
             break;
+          case 'G':
+            ARG_POSITIVE(KMERHISTTHRES,"Kmer histogram threshold")
+            break;
           case 'M':
             { int limit;
 
@@ -646,6 +650,9 @@ int main(int argc, char *argv[])
     PROFILE   = flags['p'];
     COVER     = flags['C'];
     NOMAP     = flags['N'];
+
+    if ( KMERHISTTHRES > 0 )
+      Set_MaxGram(KMERHISTTHRES);
 
     if (argc <= 2)
       { fprintf(stderr,"Usage: %s %s\n",Prog_Name,Usage[0]);
